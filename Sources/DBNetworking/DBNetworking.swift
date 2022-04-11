@@ -10,7 +10,7 @@
 import Foundation
 
 /**
- * Modulo creato per semplificare le chiamate alle web API con Swift e iOS.
+ * Modulo creato per semplificare le chiamate alle web API classiche con Swift e iOS.
  *
  * Esempio per ottenere una stringa:
  * ```
@@ -33,9 +33,9 @@ public struct DBNetworking {
      * - Returns: Un oggetto `DBNetworking.Request` da utilizzare per inviare la richiesta e ottenere la risposta (vedi esempi).
      *
      * Per effettuare una chiamata web, si crea una richiesta con questa funzione `DBNetworking.request()`.
-     * Successivamente utilizzando la funzione `response()` si invia la richiesta e si riceve la risposta.
+     * Successivamente con la funzione `response()` si invia la richiesta e si riceve la risposta.
      *
-     * È possibile serializzare automaticamente la risposta ricevuta in un generico oggetto `NSDictionary` o una `String`;
+     * È possibile serializzare automaticamente la risposta ricevuta in un generico oggetto `NSDictionary` o una `String`,
      * utile ad esempio quando non si possiede una `struct` o una `class` modellata come i dati che ci invierà il server:
      * ```
      * let weatherRequest = DBNetworking.request(
@@ -227,6 +227,18 @@ public struct DBNetworking {
         }
     }
     
+    private static func cachedResponse(
+        for request: URLRequest,
+        with session: URLSession
+    ) async -> (Data?, URLResponse?) {
+        do {
+            session.configuration.requestCachePolicy = .returnCacheDataDontLoad
+            return try await execute(request, with: session)
+        } catch {
+            return (nil, nil)
+        }
+    }
+    
     /// Struttura utilizzata per inviare una richiesta web da questo modulo.
     public struct Request {
         
@@ -256,43 +268,34 @@ public struct DBNetworking {
          * }
          * ```
          */
-        public func response<T: Decodable>(type decodable: T.Type) async -> Response<T> {
-            guard error == nil else {
-                return Response(error: error!)
+        public func response<T: Decodable>(
+            type decodable: T.Type
+        ) async -> Response<T> {
+            if let error = error {
+                return Response(error: error)
             }
             
             guard let request = urlRequest, let session = urlSession else {
                 return Response(error: RequestError())
             }
             
+            var response = Response<T>()
+            var result: (data: Data?, urlResponse: URLResponse?)
+            
             do {
-                let (data, urlResponse) = try await DBNetworking.execute(request, with: session)
-                
-                var response = Response<T>()
-                response.success = isSuccess(urlResponse)
-                
-                guard let data = data else {
-                    // Nessun dato ricevuto
-                    return response
-                }
-                
-                // Converto i dati ricevuti dal server nel formato richiesto
-                do {
-                    if decodable is String.Type {
-                        // L'oggetto richiesto è una stringa
-                        response.body = String(data: data, encoding: .utf8) as? T
-                    } else {
-                        response.body = try JSONDecoder().decode(decodable, from: data)
-                    }
-                } catch {
-                    response.error = error
-                }
-                
-                return response
+                result = try await DBNetworking.execute(request, with: session)
+            } catch {
+                response.error = error
             }
-            catch {
-                return Response(error: error)
+            
+            do {
+                response.success = isSuccess(result.urlResponse)
+                response.body = try decode(result.data, type: decodable)
+            } catch {
+                response.error = error
             }
+            
+            return response
         }
         
         /**
@@ -315,41 +318,34 @@ public struct DBNetworking {
          * }
          * ```
          */
-        public func response<T>(type foundationObject: T.Type) async -> Response<T> {
-            guard error == nil else {
-                return Response(error: error!)
+        public func response<T>(
+            type foundationObject: T.Type
+        ) async -> Response<T> {
+            if let error = error {
+                return Response(error: error)
             }
             
             guard let request = urlRequest, let session = urlSession else {
                 return Response(error: RequestError())
             }
             
+            var response = Response<T>()
+            var result: (data: Data?, urlResponse: URLResponse?)
+            
             do {
-                let (data, urlResponse) = try await DBNetworking.execute(request, with: session)
-                
-                var response = Response<T>()
-                response.success = isSuccess(urlResponse)
-                
-                guard let data = data else {
-                    // Nessun dato ricevuto
-                    return response
-                }
-                
-                do {
-                    // Converto i dati ricevuti dal server nel formato richiesto
-                    response.body = try JSONSerialization.jsonObject(
-                        with: data,
-                        options: .fragmentsAllowed
-                    ) as? T
-                } catch {
-                    response.error = error
-                }
-                
-                return response
+                result = try await DBNetworking.execute(request, with: session)
+            } catch {
+                response.error = error
             }
-            catch {
-                return Response(error: error)
+            
+            do {
+                response.success = isSuccess(result.urlResponse)
+                response.body = try decode(result.data, type: foundationObject)
+            } catch {
+                response.error = error
             }
+            
+            return response
         }
         
         /**
@@ -395,7 +391,32 @@ public struct DBNetworking {
                 return (200..<300).contains(http.statusCode)
             }
             
-            return true
+            return response != nil
+        }
+        
+        private func decode<T: Decodable>(
+            _ data: Data?,
+            type decodable: T.Type
+        ) throws -> T? {
+            guard let data = data else { return nil }
+            
+            if decodable is String.Type {
+                return String(data: data, encoding: .utf8) as? T
+            } else {
+                return try JSONDecoder().decode(decodable, from: data)
+            }
+        }
+        
+        private func decode<T>(
+            _ data: Data?,
+            type foundationObject: T.Type
+        ) throws -> T? {
+            guard let data = data else { return nil }
+            
+            return try JSONSerialization.jsonObject(
+                with: data,
+                options: .fragmentsAllowed
+            ) as? T
         }
         
         // Costruttore privato
