@@ -28,7 +28,7 @@ iOS 13.0 or later
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/davidebalistreri/dbnetworking.git", .upToNextMajor(from: "1.0.0"))
+    .package(url: "https://github.com/davidebalistreri/dbnetworking.git", .upToNextMajor(from: "1.0.1"))
 ]
 ```
 
