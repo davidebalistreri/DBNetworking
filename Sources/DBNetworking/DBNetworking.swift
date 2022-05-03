@@ -19,6 +19,8 @@ import Foundation
  *     .response().body
  * ```
  */
+@available(macOS 12.0, *)
+@available(iOS 15.0.0, *)
 public struct DBNetworking {
     
     /**
