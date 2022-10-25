@@ -122,10 +122,7 @@ public struct DBNetworking {
         urlRequest.setValue("application/json", forHTTPHeaderField: "Accept")
         
         // Parameters
-        if parameters == nil || parameters?.isEmpty == true {
-            // No parameters
-        }
-        else if type == .get || type == .delete {
+        if type == .get || type == .delete {
             var queryItems: [URLQueryItem] = []
             
             for (key, value) in parameters ?? [:] {
