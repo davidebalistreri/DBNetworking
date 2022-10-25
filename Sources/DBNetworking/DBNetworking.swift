@@ -470,6 +470,13 @@ public struct DBNetworking {
         
         public let data: Data?
         
+        public init(parameterName: String?, fileName: String?, mimeType: String?, data: Data?) {
+            self.parameterName = parameterName
+            self.fileName = fileName
+            self.mimeType = mimeType
+            self.data = data
+        }
+        
     }
     
     // Costruttore privato
