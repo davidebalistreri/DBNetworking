@@ -3,7 +3,7 @@
 //  App Design course
 //
 //  Created by Davide Balistreri on 02/08/2018.
-//  Updated on 02/04/2022.
+//  Updated on 09/17/2024.
 //  Copyright © 2018. All rights reserved.
 //
 
@@ -31,6 +31,7 @@ public struct DBNetworking {
      * - Parameter authToken: Il token di autenticazione (facoltativo).
      * - Parameter parameters: I parametri da inviare al server (facoltativi).
      * - Parameter multipartFiles: I file da inviare al server in multipart (facoltativi).
+     * - Parameter useJsonSerialization: Il modo in cui viene serializzato il body della richiesta (default: query string).
      * - Parameter configuration: La configurazione da utilizzare per effettuare la richiesta (default: utilizza la cache).
      * - Returns: Un oggetto `DBNetworking.Request` da utilizzare per inviare la richiesta e ottenere la risposta (vedi esempi).
      *
@@ -96,6 +97,7 @@ public struct DBNetworking {
         authToken: String? = nil,
         parameters: [String: Any]? = nil,
         multipartFiles: [MultipartFile]? = nil,
+        useJsonSerialization: Bool = false,
         configuration: URLSessionConfiguration = .default
     ) -> Request {
         // Request URL
@@ -122,30 +124,48 @@ public struct DBNetworking {
         urlRequest.setValue("application/json", forHTTPHeaderField: "Accept")
         
         // Parameters
-        if type == .get || type == .delete {
-            var queryItems: [URLQueryItem] = []
-            
-            for (key, value) in parameters ?? [:] {
-                queryItems.append(URLQueryItem(name: key, value: "\(value)"))
+        if let parameters, parameters.isEmpty == false {
+            switch type {
+            case .get, .delete:
+                var queryItems: [URLQueryItem] = []
+                
+                for (key, value) in parameters {
+                    queryItems.append(URLQueryItem(name: key, value: "\(value)"))
+                }
+                
+                var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+                components?.queryItems = queryItems
+                urlRequest.url = components?.url ?? urlRequest.url
+                
+            case .post:
+                if useJsonSerialization {
+                    urlRequest.httpBody = try? JSONSerialization.data(
+                        withJSONObject: parameters
+                    )
+                } else {
+                    fallthrough
+                }
+                
+            case .multipartPost:
+                // Form-data
+                let boundaryUUID = UUID().uuidString
+                let boundaryString = "Boundary-" + boundaryUUID
+                
+                urlRequest.setValue("multipart/form-data; boundary=" + boundaryString, forHTTPHeaderField: "Content-Type")
+                
+                // Inserisco i parametri specificati
+                urlRequest.httpBody = makeBody(with: parameters, boundaryString: boundaryString, multipartFiles: multipartFiles)
+                
+            case .put:
+                if useJsonSerialization {
+                    urlRequest.httpBody = try? JSONSerialization.data(
+                        withJSONObject: parameters
+                    )
+                } else {
+                    let body = parameters.map { "\($0.key)=\($0.value)" }
+                    urlRequest.httpBody = body.joined(separator: "&").data(using: .utf8)
+                }
             }
-            
-            var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
-            components?.queryItems = queryItems
-            urlRequest.url = components?.url ?? urlRequest.url
-        }
-        else if type == .post || type == .multipartPost {
-            // Form-data
-            let boundaryUUID = UUID().uuidString
-            let boundaryString = "Boundary-" + boundaryUUID
-            
-            urlRequest.setValue("multipart/form-data; boundary=" + boundaryString, forHTTPHeaderField: "Content-Type")
-            
-            // Inserisco i parametri specificati
-            urlRequest.httpBody = makeBody(with: parameters, boundaryString: boundaryString, multipartFiles: multipartFiles)
-        }
-        else if type == .put {
-            let body = parameters?.map { "\($0.key)=\($0.value)" }
-            urlRequest.httpBody = body?.joined(separator: "&").data(using: .utf8)
         }
         
         let session = URLSession(configuration: configuration)
@@ -200,39 +220,13 @@ public struct DBNetworking {
         }
     }
     
-    // Supporta async/await anche prima di iOS 15
-    private static func execute(
-        _ request: URLRequest,
-        with session: URLSession
-    ) async throws -> (Data?, URLResponse?) {
-        if #available(iOS 15.0, *) {
-            // New API
-            return try await session.data(for: request)
-        }
-        
-        // Fallback on earlier versions
-        return try await withCheckedThrowingContinuation {
-            (continuation: CheckedContinuation<(Data?, URLResponse?), Error>) in
-            let task = session.dataTask(with: request) { data, response, error in
-                guard let data = data, let response = response else {
-                    let error = error ?? URLError(.badServerResponse)
-                    return continuation.resume(throwing: error)
-                }
-                
-                continuation.resume(returning: (data, response))
-            }
-            
-            task.resume()
-        }
-    }
-    
     private static func cachedResponse(
         for request: URLRequest,
         with session: URLSession
     ) async -> (Data?, URLResponse?) {
         do {
             session.configuration.requestCachePolicy = .returnCacheDataDontLoad
-            return try await execute(request, with: session)
+            return try await session.data(for: request)
         } catch {
             return (nil, nil)
         }
@@ -282,7 +276,7 @@ public struct DBNetworking {
             var result: (data: Data?, urlResponse: URLResponse?)
             
             do {
-                result = try await DBNetworking.execute(request, with: session)
+                result = try await session.data(for: request)
             } catch {
                 response.error = error
             }
@@ -332,7 +326,7 @@ public struct DBNetworking {
             var result: (data: Data?, urlResponse: URLResponse?)
             
             do {
-                result = try await DBNetworking.execute(request, with: session)
+                result = try await session.data(for: request)
             } catch {
                 response.error = error
             }
