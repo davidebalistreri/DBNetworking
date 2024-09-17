@@ -28,7 +28,8 @@ public struct DBNetworking {
      *
      * - Parameter url: L'indirizzo dell'API da richiamare.
      * - Parameter type: Il tipo di richiesta HTTP (default: GET).
-     * - Parameter authToken: Il token di autenticazione (facoltativo).
+     * - Parameter authToken: Il token di autenticazione da aggiungere agli header (facoltativo).
+     * - Parameter headers: I parametri da inviare come header case-insensitive (facoltativi).
      * - Parameter parameters: I parametri da inviare al server (facoltativi).
      * - Parameter multipartFiles: I file da inviare al server in multipart (facoltativi).
      * - Parameter useJsonSerialization: Il modo in cui viene serializzato il body della richiesta (default: query string).
@@ -95,6 +96,7 @@ public struct DBNetworking {
         url urlString: String,
         type: RequestType = .get,
         authToken: String? = nil,
+        headers: [String: String]? = nil,
         parameters: [String: Any]? = nil,
         multipartFiles: [MultipartFile]? = nil,
         useJsonSerialization: Bool = false,
@@ -122,6 +124,11 @@ public struct DBNetworking {
         // Content type
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         urlRequest.setValue("application/json", forHTTPHeaderField: "Accept")
+        
+        // Headers
+        for header in headers ?? [:] {
+            urlRequest.setValue(header.value, forHTTPHeaderField: header.key)
+        }
         
         // Parameters
         if let parameters, parameters.isEmpty == false {
