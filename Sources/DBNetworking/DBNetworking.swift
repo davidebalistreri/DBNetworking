@@ -22,7 +22,7 @@ import Foundation
 @available(macOS 12.0, *)
 @available(iOS 15.0.0, *)
 public struct DBNetworking {
-    
+
     /**
      * Crea un oggetto `DBNetworking.Request` da utilizzare per inviare una richiesta web con i parametri specificati.
      *
@@ -34,6 +34,7 @@ public struct DBNetworking {
      * - Parameter multipartFiles: I file da inviare al server in multipart (facoltativi).
      * - Parameter useJsonSerialization: Il modo in cui viene serializzato il body della richiesta (default: query string).
      * - Parameter configuration: La configurazione da utilizzare per effettuare la richiesta (default: utilizza la cache).
+     * - Parameter queueKey: La chiave della coda FIFO da usare per serializzare la richiesta (facoltativa).
      * - Returns: Un oggetto `DBNetworking.Request` da utilizzare per inviare la richiesta e ottenere la risposta (vedi esempi).
      *
      * Per effettuare una chiamata web, si crea una richiesta con questa funzione `DBNetworking.request()`.
@@ -100,15 +101,16 @@ public struct DBNetworking {
         parameters: [String: Any]? = nil,
         multipartFiles: [MultipartFile]? = nil,
         useJsonSerialization: Bool = false,
-        configuration: URLSessionConfiguration = .default
+        configuration: URLSessionConfiguration = .default,
+        queueKey: String? = nil
     ) -> Request {
         // Request URL
         guard let url = URL(string: urlString) else {
             return Request(error: URLError(.badURL))
         }
-        
+
         var urlRequest = URLRequest(url: url)
-        
+
         // Request type
         switch type {
         case .get:
@@ -117,34 +119,36 @@ public struct DBNetworking {
             urlRequest.httpMethod = "POST"
         case .put:
             urlRequest.httpMethod = "PUT"
+        case .patch:
+            urlRequest.httpMethod = "PATCH"
         case .delete:
             urlRequest.httpMethod = "DELETE"
         }
-        
+
         // Content type
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         urlRequest.setValue("application/json", forHTTPHeaderField: "Accept")
-        
+
         // Headers
         for header in headers ?? [:] {
             urlRequest.setValue(header.value, forHTTPHeaderField: header.key)
         }
-        
+
         // Parameters
         if let parameters, parameters.isEmpty == false {
             switch type {
             case .get, .delete:
                 var queryItems: [URLQueryItem] = []
-                
+
                 for (key, value) in parameters {
                     queryItems.append(URLQueryItem(name: key, value: "\(value)"))
                 }
-                
+
                 var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
                 components?.queryItems = queryItems
                 urlRequest.url = components?.url ?? urlRequest.url
-                
-            case .post:
+
+            case .post, .patch:
                 if useJsonSerialization {
                     urlRequest.httpBody = try? JSONSerialization.data(
                         withJSONObject: parameters
@@ -152,17 +156,17 @@ public struct DBNetworking {
                 } else {
                     fallthrough
                 }
-                
+
             case .multipartPost:
                 // Form-data
                 let boundaryUUID = UUID().uuidString
                 let boundaryString = "Boundary-" + boundaryUUID
-                
+
                 urlRequest.setValue("multipart/form-data; boundary=" + boundaryString, forHTTPHeaderField: "Content-Type")
-                
+
                 // Inserisco i parametri specificati
                 urlRequest.httpBody = makeBody(with: parameters, boundaryString: boundaryString, multipartFiles: multipartFiles)
-                
+
             case .put:
                 if useJsonSerialization {
                     urlRequest.httpBody = try? JSONSerialization.data(
@@ -174,22 +178,26 @@ public struct DBNetworking {
                 }
             }
         }
-        
+
         let session = URLSession(configuration: configuration)
-        
-        return Request(urlRequest: urlRequest, urlSession: session)
-            .setAuthToken(authToken)
+
+        return Request(
+            urlRequest: urlRequest,
+            urlSession: session,
+            queueKey: queueKey
+        )
+        .setAuthToken(authToken)
     }
-    
+
     private static func makeBody(
         with parameters: [String: Any]?,
         boundaryString: String,
         multipartFiles: [MultipartFile]?
     ) -> Data {
         let body = NSMutableData()
-        
+
         let boundaryPrefix = "--" + boundaryString + "\r\n"
-        
+
         if let parameters = parameters {
             for (key, value) in parameters {
                 append(string: boundaryPrefix, to: body)
@@ -197,36 +205,36 @@ public struct DBNetworking {
                 append(string: "\(value)\r\n", to: body)
             }
         }
-        
+
         for multipartFile in multipartFiles ?? [] {
             append(string: boundaryPrefix, to: body)
-            
+
             if let parameter = multipartFile.parameterName, let name = multipartFile.fileName {
                 append(string: "Content-Disposition: form-data; name=\"" + parameter + "\"; filename=\"" + name + "\"\r\n", to: body)
             }
-            
+
             if let mimeType = multipartFile.mimeType {
                 append(string: "Content-Type: " + mimeType + "r\n\r\n", to: body)
             }
-            
+
             if let data = multipartFile.data {
                 body.append(data)
             }
-            
+
             append(string: "\r\n", to: body)
             append(string: "--" + boundaryString + "--", to: body)
         }
-        
+
         return body as Data
     }
-    
+
     // Per semplificare la conversione di stringhe in bytes
     private static func append(string: String, to: NSMutableData) {
         if let data = string.data(using: String.Encoding.utf8, allowLossyConversion: false) {
             to.append(data)
         }
     }
-    
+
     private static func cachedResponse(
         for request: URLRequest,
         with session: URLSession
@@ -238,16 +246,19 @@ public struct DBNetworking {
             return (nil, nil)
         }
     }
-    
+
     /// Struttura utilizzata per inviare una richiesta web da questo modulo.
     public struct Request {
-        
+
         /// Se presente, indica che la creazione della richiesta non è andata a buon fine.
         public let error: Error?
-        
+
         public var urlRequest: URLRequest?
         public var urlSession: URLSession?
-        
+        public var queueKey: String?
+
+        private static let scheduler = RequestScheduler()
+
         /**
          * Invia la richiesta e serializza automaticamente la risposta ricevuta (per oggetti `Decodable`).
          *
@@ -274,30 +285,28 @@ public struct DBNetworking {
             if let error = error {
                 return Response(error: error)
             }
-            
+
             guard let request = urlRequest, let session = urlSession else {
                 return Response(error: RequestError())
             }
-            
+
             var response = Response<T>()
-            var result: (data: Data?, urlResponse: URLResponse?)
-            
-            do {
-                result = try await session.data(for: request)
-            } catch {
+            let result = await perform(request: request, session: session)
+
+            if let error = result.error {
                 response.error = error
             }
-            
+
             do {
                 response.success = isSuccess(result.urlResponse)
                 response.body = try decode(result.data, type: decodable)
             } catch {
                 response.error = error
             }
-            
+
             return response
         }
-        
+
         /**
          * Invia la richiesta e serializza automaticamente la risposta ricevuta (per oggetti `Foundation`).
          *
@@ -324,30 +333,28 @@ public struct DBNetworking {
             if let error = error {
                 return Response(error: error)
             }
-            
+
             guard let request = urlRequest, let session = urlSession else {
                 return Response(error: RequestError())
             }
-            
+
             var response = Response<T>()
-            var result: (data: Data?, urlResponse: URLResponse?)
-            
-            do {
-                result = try await session.data(for: request)
-            } catch {
+            let result = await perform(request: request, session: session)
+
+            if let error = result.error {
                 response.error = error
             }
-            
+
             do {
                 response.success = isSuccess(result.urlResponse)
                 response.body = try decode(result.data, type: foundationObject)
             } catch {
                 response.error = error
             }
-            
+
             return response
         }
-        
+
         /**
          * Invia la richiesta e serializza la risposta in una stringa.
          *
@@ -367,7 +374,7 @@ public struct DBNetworking {
         public func response() async -> Response<String> {
             return await response(type: String.self)
         }
-        
+
         /**
          * Modifica il token di autenticazione della richiesta.
          *
@@ -376,108 +383,224 @@ public struct DBNetworking {
         @discardableResult
         public func setAuthToken(_ authToken: String?) -> Request {
             var urlRequest = self.urlRequest
-            
+
             if let authToken = authToken {
                 urlRequest?.setValue(authToken, forHTTPHeaderField: "Authorization")
             } else {
                 urlRequest?.allHTTPHeaderFields?.removeValue(forKey: "Authorization")
             }
-            
-            return .init(urlRequest: urlRequest, urlSession: self.urlSession, error: self.error)
+
+            return .init(
+                urlRequest: urlRequest,
+                urlSession: self.urlSession,
+                queueKey: self.queueKey,
+                error: self.error
+            )
         }
-        
+
+        /// If `queueKey` is `nil`, the pacing is applied globally as the default
+        /// for queues without a dedicated override.
+        public static func setPacing(
+            _ interval: TimeInterval?,
+            forQueueKey queueKey: String? = nil
+        ) {
+            let semaphore = DispatchSemaphore(value: 0)
+
+            Task {
+                await scheduler.setPacing(interval, forQueueKey: queueKey)
+                semaphore.signal()
+            }
+
+            semaphore.wait()
+        }
+
         private func isSuccess(_ response: URLResponse?) -> Bool {
             if let http = response as? HTTPURLResponse {
                 return (200..<300).contains(http.statusCode)
             }
-            
+
             return response != nil
         }
-        
+
         private func decode<T: Decodable>(
             _ data: Data?,
             type decodable: T.Type
         ) throws -> T? {
             guard let data = data else { return nil }
-            
+
             if decodable is String.Type {
                 return String(data: data, encoding: .utf8) as? T
             } else {
                 return try JSONDecoder().decode(decodable, from: data)
             }
         }
-        
+
         private func decode<T>(
             _ data: Data?,
             type foundationObject: T.Type
         ) throws -> T? {
             guard let data = data else { return nil }
-            
+
             return try JSONSerialization.jsonObject(
                 with: data,
                 options: .fragmentsAllowed
             ) as? T
         }
-        
+
         // Costruttore privato
         fileprivate init(
             urlRequest: URLRequest? = nil,
             urlSession: URLSession? = nil,
+            queueKey: String? = nil,
             error: Error? = nil
         ) {
             self.urlRequest = urlRequest
             self.urlSession = urlSession
+            self.queueKey = queueKey
             self.error = error
         }
-        
+
+        private func perform(
+            request: URLRequest,
+            session: URLSession
+        ) async -> (data: Data?, urlResponse: URLResponse?, error: Error?) {
+            if let queueKey {
+                return await Self.scheduler.execute(queueKey: queueKey) {
+                    do {
+                        let result = try await session.data(for: request)
+                        return (result.0, result.1, nil)
+                    } catch {
+                        return (nil, nil, error)
+                    }
+                }
+            }
+
+            do {
+                let result = try await session.data(for: request)
+                return (result.0, result.1, nil)
+            } catch {
+                return (nil, nil, error)
+            }
+        }
+
         public struct RequestError : Error { }
-        
+
     }
-    
+
     /// Struttura restituita in risposta alle richieste web effettuate da questo modulo.
     public struct Response<T> {
-        
+
         /// Indica se la richiesta effettuata è andata a buon fine.
         public var success: Bool = false
-        
+
         /// Se presente, indica che si è verificato un errore durante l'esecuzione della richiesta.
         public var error: Error?
-        
+
         /// I dati ricevuti dal server, convertiti nel formato specificato.
         public var body: T?
-        
+
     }
-    
+
     /// I tipi di richieste HTTP supportati da questo modulo.
     public enum RequestType {
         case get
         case post
         case multipartPost
         case put
+        case patch
         case delete
     }
-    
+
     /// Struttura da utilizzare per inviare un file in multipart da questo modulo.
     public struct MultipartFile {
-        
+
         public let parameterName: String?
-        
+
         public let fileName: String?
-        
+
         public let mimeType: String?
-        
+
         public let data: Data?
-        
+
         public init(parameterName: String?, fileName: String?, mimeType: String?, data: Data?) {
             self.parameterName = parameterName
             self.fileName = fileName
             self.mimeType = mimeType
             self.data = data
         }
-        
+
     }
-    
+
     // Costruttore privato
-    private init() { }
+    private init() {}
+}
     
+/// Serializes queued requests per `queueKey` and applies optional pacing between executions.
+private actor RequestScheduler {
+    private let defaultQueueKey = "__dbnetworking_default_queue__"
+    private var pacingByQueueKey: [String: TimeInterval] = [:]
+    private var tailByQueueKey: [String: Task<Void, Never>] = [:]
+    private var lastExecutionDateByQueueKey: [String: Date] = [:]
+
+    func setPacing(_ interval: TimeInterval?, forQueueKey queueKey: String?) {
+        let normalizedQueueKey = normalize(queueKey)
+
+        if let interval, interval > 0 {
+            pacingByQueueKey[normalizedQueueKey] = interval
+        } else {
+            pacingByQueueKey.removeValue(forKey: normalizedQueueKey)
+        }
+    }
+
+    func execute<T>(
+        queueKey: String,
+        operation: @Sendable @escaping () async -> T
+    ) async -> T {
+        let previousTail = tailByQueueKey[queueKey]
+
+        let operationTask = Task<T, Never> {
+            if let previousTail {
+                await previousTail.value
+            }
+
+            await waitIfNeeded(forQueueKey: queueKey)
+            return await operation()
+        }
+
+        tailByQueueKey[queueKey] = Task<Void, Never> {
+            _ = await operationTask.value
+        }
+
+        let result = await operationTask.value
+
+        if tailByQueueKey[queueKey]?.isCancelled == true {
+            tailByQueueKey.removeValue(forKey: queueKey)
+        }
+
+        return result
+    }
+
+    private func waitIfNeeded(forQueueKey queueKey: String) async {
+        let interval = pacingByQueueKey[queueKey] ?? pacingByQueueKey[defaultQueueKey] ?? 0
+        let now = Date()
+
+        if let lastExecutionDate = lastExecutionDateByQueueKey[queueKey] {
+            let elapsed = now.timeIntervalSince(lastExecutionDate)
+
+            if interval > elapsed {
+                let remainingNanoseconds = UInt64((interval - elapsed) * 1_000_000_000)
+                try? await Task.sleep(nanoseconds: remainingNanoseconds)
+            }
+        }
+
+        lastExecutionDateByQueueKey[queueKey] = Date()
+    }
+
+    private func normalize(_ queueKey: String?) -> String {
+        if let queueKey, queueKey.isEmpty == false {
+            return queueKey
+        }
+
+        return defaultQueueKey
+    }
 }

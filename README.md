@@ -14,6 +14,7 @@ let string = await DBNetworking
 - [x] Swift Concurrency support
 - [x] Automatic response decoding
 - [x] Multipart POST
+- [x] Optional FIFO queues with pacing
 - [x] Repeatable requests
 
 
@@ -95,4 +96,21 @@ let userRequest = DBNetworking.request(
 let userResponse = await userRequest
     .setAuthToken("AmydY57cen3KLrlvUGZrCpziw81w")
     .response(type: ResponseModel<UserModel>.self)
+```
+
+Per serializzare più richieste sulla stessa FIFO con pacing condiviso:
+```swift
+DBNetworking.Request.setPacing(0.02, forQueueKey: "actions")
+
+let response = await DBNetworking.request(
+    url: "https://example.com/api",
+    type: .post,
+    queueKey: "actions"
+)
+.response()
+```
+
+Per impostare un pacing globale di fallback per tutte le queue senza override dedicato:
+```swift
+DBNetworking.Request.setPacing(0.02)
 ```
