@@ -81,6 +81,21 @@ let string = await DBNetworking
     .response().body
 ```
 
+Per ottenere una risposta binaria raw, ad esempio un'immagine:
+```swift
+let imageResponse = await DBNetworking
+    .request(
+        url: "https://example.com/image.jpg",
+        queueKey: "polling")
+    .responseData()
+
+if imageResponse.success, let data = imageResponse.body {
+    // Usa qui i byte raw dell'immagine
+}
+
+let statusCode = (imageResponse.urlResponse as? HTTPURLResponse)?.statusCode
+```
+
 Per controllare solamente se una richiesta è andata a buon fine:
 ```swift
 let success = await DBNetworking

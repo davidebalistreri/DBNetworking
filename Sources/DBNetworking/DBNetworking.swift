@@ -282,29 +282,9 @@ public struct DBNetworking {
         public func response<T: Decodable>(
             type decodable: T.Type
         ) async -> Response<T> {
-            if let error = error {
-                return Response(error: error)
+            await performResponse { data in
+                try decode(data, type: decodable)
             }
-
-            guard let request = urlRequest, let session = urlSession else {
-                return Response(error: RequestError())
-            }
-
-            var response = Response<T>()
-            let result = await perform(request: request, session: session)
-
-            if let error = result.error {
-                response.error = error
-            }
-
-            do {
-                response.success = isSuccess(result.urlResponse)
-                response.body = try decode(result.data, type: decodable)
-            } catch {
-                response.error = error
-            }
-
-            return response
         }
 
         /**
@@ -330,29 +310,9 @@ public struct DBNetworking {
         public func response<T>(
             type foundationObject: T.Type
         ) async -> Response<T> {
-            if let error = error {
-                return Response(error: error)
+            await performResponse { data in
+                try decode(data, type: foundationObject)
             }
-
-            guard let request = urlRequest, let session = urlSession else {
-                return Response(error: RequestError())
-            }
-
-            var response = Response<T>()
-            let result = await perform(request: request, session: session)
-
-            if let error = result.error {
-                response.error = error
-            }
-
-            do {
-                response.success = isSuccess(result.urlResponse)
-                response.body = try decode(result.data, type: foundationObject)
-            } catch {
-                response.error = error
-            }
-
-            return response
         }
 
         /**
@@ -373,6 +333,17 @@ public struct DBNetworking {
         @discardableResult
         public func response() async -> Response<String> {
             return await response(type: String.self)
+        }
+
+        /**
+         * Invia la richiesta e restituisce il body raw senza alcuna decodifica.
+         *
+         * È utile per immagini, file e altre risposte binarie. La richiesta segue
+         * lo stesso percorso delle risposte JSON e quindi mantiene `queueKey`,
+         * pacing, status HTTP ed error handling.
+         */
+        public func responseData() async -> Response<Data> {
+            await performResponse { data in data }
         }
 
         /**
@@ -483,6 +454,32 @@ public struct DBNetworking {
             }
         }
 
+        private func performResponse<T>(
+            _ decodeBody: (Data?) throws -> T?
+        ) async -> Response<T> {
+            if let error = error {
+                return Response(error: error)
+            }
+
+            guard let request = urlRequest, let session = urlSession else {
+                return Response(error: RequestError())
+            }
+
+            let result = await perform(request: request, session: session)
+            var response = Response<T>()
+            response.error = result.error
+            response.urlResponse = result.urlResponse
+            response.success = isSuccess(result.urlResponse)
+
+            do {
+                response.body = try decodeBody(result.data)
+            } catch {
+                response.error = error
+            }
+
+            return response
+        }
+
         public struct RequestError : Error { }
 
     }
@@ -498,6 +495,9 @@ public struct DBNetworking {
 
         /// I dati ricevuti dal server, convertiti nel formato specificato.
         public var body: T?
+
+        /// La risposta HTTP originale, inclusi status code e header.
+        public var urlResponse: URLResponse?
 
     }
 
